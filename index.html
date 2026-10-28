@@ -6013,9 +6013,19 @@ Important Rules for Extraction:
     if (!o || !o.u || !o.k || !o.e) throw new Error('bad code');
     return o;
   }
+  // Link needs the app's web address. When the app is opened from the web it is remembered; when it is opened
+  // as a local file (content:// or file://) the remembered / typed web address is used instead.
+  const WEB_KEY = 'sgs_live_web_url';
+  const isWeb = /^https?:$/.test(location.protocol);
+  if (isWeb) { try { localStorage.setItem(WEB_KEY, location.href.split('#')[0]); } catch (e) {} }
+  function webBase() {
+    if (isWeb) return location.href.split('#')[0];
+    let v = ''; try { v = localStorage.getItem(WEB_KEY) || ''; } catch (e) {}
+    return /^https?:\/\//i.test(v) ? v.split('#')[0] : '';
+  }
   function toLink(cfg) {
-    if (!/^https?:$/.test(location.protocol)) return '';
-    return location.href.split('#')[0] + '#join=' + toCode(cfg);
+    const base = webBase();
+    return base ? base + '#join=' + toCode(cfg) : '';
   }
 
   // ---------- end-to-end grant: the data token is encrypted for the requesting member only ----------
@@ -6297,9 +6307,12 @@ Important Rules for Extraction:
           <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
             <button type="button" id="live-copy-link" style="${btn('#3498db')}">📋 Copy Link</button>
             ${navigator.share ? `<button type="button" id="live-share-link" style="${btn('#8e44ad')}">📤 Share</button>` : ''}
+            ${isWeb ? '' : `<button type="button" id="live-web-change" style="${btn('#7f8c8d')}">✏️ Web လိပ်စာ ပြောင်း</button>`}
           </div>`;
       } else {
-        html += `<div style="font-size:12px; color:#a05a00; background:#fff6e5; padding:8px; border-radius:6px;">ဒီ App ကို Web (https) ပေါ်မှာ မဖွင့်ထားသဖြင့် Link မထုတ်နိုင်ပါ။ အောက်က Code ကို ပို့ပါ — Team Member က Team Live ထဲမှာ "Code ဖြင့် ဝင်မည်" တွင် Paste လုပ်ပါ။</div>`;
+        html += `<div style="font-size:12px; color:#a05a00; background:#fff6e5; padding:8px; border-radius:6px; line-height:1.6;">ဒီ App ကို ဖိုင်အဖြစ် ဖွင့်ထားသဖြင့် Link မထုတ်နိုင်သေးပါ။ App ကို တင်ထားသော <b>Web လိပ်စာ (https://…)</b> ကို အောက်မှာ တစ်ကြိမ်ထည့်ပါ — ပြီးလျှင် Link ထွက်ပါမည်။
+          <input type="text" id="live-web-url" placeholder="https://yourname.github.io/your-app/" autocapitalize="off" autocomplete="off" spellcheck="false" style="${inp} margin-top:6px;">
+          <button type="button" id="live-web-save" style="${btn('#2C5E43')} margin-top:6px;">💾 Web လိပ်စာ သိမ်းမည်</button></div>`;
       }
       html += `<label style="${lbl}">🔑 Join Code</label>
         <input type="text" readonly value="${esc(code)}" onclick="this.select()" style="${inp} font-family:monospace; font-size:11px;">
@@ -6336,6 +6349,13 @@ Important Rules for Extraction:
     const on = (id, fn) => { const e = document.getElementById(id); if (e) e.addEventListener('click', fn); };
     on('live-start-btn', startShare);
     on('live-join-btn', () => join(document.getElementById('live-join-input').value));
+    on('live-web-save', () => {
+      const v = (document.getElementById('live-web-url').value || '').trim();
+      if (!/^https?:\/\/[^\s]+\.[^\s]+/i.test(v)) { alert('⚠️ https:// ဖြင့်စသော Web လိပ်စာ အပြည့်အစုံ ထည့်ပါ'); return; }
+      try { localStorage.setItem(WEB_KEY, v.split('#')[0]); } catch (e) {}
+      renderModal();
+    });
+    on('live-web-change', () => { if (confirm('သိမ်းထားသော Web လိပ်စာကို ဖျက်ပြီး အသစ်ထည့်မလား?')) { try { localStorage.removeItem(WEB_KEY); } catch (e) {} renderModal(); } });
     on('live-copy-link', () => copyText(toLink(live.cfg), '✅ Link ကူးပြီးပါပြီ'));
     on('live-copy-code', () => copyText(toCode(live.cfg), '✅ Code ကူးပြီးပါပြီ'));
     on('live-share-link', () => navigator.share({ title: 'SGS Job ' + live.cfg.jobNo, text: 'SGS Surveyor Notes - Job ' + live.cfg.jobNo + ' (Team Live)', url: toLink(live.cfg) }).catch(() => {}));
