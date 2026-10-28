@@ -5731,6 +5731,47 @@ Important Rules for Extraction:
   const esc = v => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
   const rand = () => Math.random().toString(36).slice(2, 7);
 
+  // ---------- Lock: someone who pressed Cancel on the join warning cannot use the page on this device ----------
+  // (Share Link itself stays alive for everybody else.) Unlocks only after the owner accepts a new request.
+  const BLOCK_KEY = 'sgs_live_blocked';
+  let lockEl = null;
+  live.visiting = false;
+  function isBlocked() { try { return localStorage.getItem(BLOCK_KEY) === '1'; } catch (e) { return false; } }
+  function setBlocked(on) { try { if (on) localStorage.setItem(BLOCK_KEY, '1'); else localStorage.removeItem(BLOCK_KEY); } catch (e) {} }
+  function showLock(state, reason) {
+    live.visiting = true;
+    if (!lockEl) {
+      lockEl = document.createElement('div');
+      lockEl.id = 'live-lock'; lockEl.className = 'exclude-export';
+      lockEl.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; z-index:999999; background:linear-gradient(135deg,#173e2a,#2c6b4b); color:#fff; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; overflow:auto;';
+      document.body.appendChild(lockEl);
+    }
+    const blocked = state === 'blocked';
+    const msg = blocked
+      ? (reason || 'ဝင်ခွင့် မတောင်းသဖြင့် ဒီစက်မှာ ဒီ Page ကို အသုံးပြုခွင့် ပိတ်ထားပါသည်။')
+      : 'Owner ၏ ခွင့်ပြုချက်ရမှသာ ဝင်ခွင့်ရပါမည်။';
+    lockEl.innerHTML = `<div style="max-width:380px; width:100%;">
+      <div style="font-size:46px;">${blocked ? '🔒' : '👥'}</div>
+      <div style="font-size:20px; font-weight:800; margin-top:10px;">${blocked ? 'ဝင်ခွင့် မရှိပါ' : 'Team Live Link'}</div>
+      <div style="font-size:14px; line-height:1.7; margin-top:10px; opacity:.92;">${msg}</div>
+      ${blocked ? `<div style="margin-top:18px; background:rgba(255,255,255,.12); border-radius:10px; padding:12px; text-align:left;">
+        <div style="font-size:12px; opacity:.9; margin-bottom:6px;">ပြန်ဝင်လိုလျှင် Owner ပေးသော Link / Code ကို ထည့်ပြီး ဝင်ခွင့် တောင်းပါ (Owner လက်ခံမှ ပြန်ဖွင့်ပါမည်)</div>
+        <input type="text" id="live-lock-input" placeholder="Link (သို့) Code" autocapitalize="off" autocomplete="off" spellcheck="false" style="width:100%; box-sizing:border-box; padding:10px; border:0; border-radius:8px; font-size:14px;">
+        <button type="button" id="live-lock-join" style="margin-top:8px; width:100%; background:#fff; color:#173e2a; border:0; border-radius:8px; padding:11px; font-weight:800; font-size:14px; cursor:pointer;">👥 ဝင်ခွင့် တောင်းမည်</button></div>` : ''}
+    </div>`;
+    lockEl.style.display = 'flex';
+    const mm = document.getElementById('liveTeamModal'); if (mm && blocked && !live.joining) mm.style.display = 'none';
+    const jb = document.getElementById('live-lock-join');
+    if (jb) jb.onclick = () => { const v = (document.getElementById('live-lock-input').value || '').trim(); if (v) join(v, true); };
+  }
+  (function () {
+    const c0 = safeParseJSON(localStorage.getItem(CFG_KEY), null);
+    if (c0 && c0.token) return;                       // already inside a live session: never lock
+    if (isBlocked()) { showLock('blocked'); return; }
+    const hm = (location.hash || '').match(/join=([A-Za-z0-9_\-]+)/);
+    if (hm) showLock('ask');                          // hide the app while the warning is on screen
+  })();
+
   // ---------- pure 3-way merge (unit tested) ----------
   // local/remote/base: flat maps. Returns what to apply locally, push to cloud, and base bookkeeping.
   function threeWay(local, remote, base, inflight) {
@@ -6138,27 +6179,25 @@ Important Rules for Extraction:
     clearTimeout(j.timer);
     live.joining = null;
   }
-  async function cancelJoin(removeReq) {
+  async function cancelJoin(removeReq, persist) {
     const j = live.joining;
     if (j && removeReq) { try { await j.db.ref('sgs_live/' + j.info.k + '/requests/' + j.dev + '/status').set('cancelled'); } catch (e) {} }
     clearJoining(); renderModalIfOpen();
+    if (live.visiting) { if (persist) setBlocked(true); showLock('blocked', persist ? '' : 'Link သက်တမ်းကုန်သွားပါပြီ — Owner ထံမှ Link အသစ် တောင်းပါ။'); }
   }
 
-  // Cancel on the join warning = this link is closed for good (meta/linkExp = 0). Owner can make a new link.
-  async function closeLinkOnCancel(info) {
-    try {
-      await getDb(info.u).ref('sgs_live/' + info.k + '/meta/linkExp').set(0);
-      alert('🔒 ဝင်ခွင့် မတောင်းသဖြင့် ဒီ Link ကို ပိတ်လိုက်ပါပြီ။ ပြန်ဖွင့်၍ မရတော့ပါ — Owner က Link အသစ်ထုတ်ပေးမှ သုံးနိုင်ပါမည်။');
-    } catch (e) { alert('⚠️ Link ကို ပိတ်မရပါ: ' + (e && e.message ? e.message : e)); }
+  async function join(text, fromLink) {
+    const ok = await joinInner(text, fromLink);
+    if (fromLink && !ok && !live.cfg) showLock('blocked', isBlocked() ? '' : 'ဝင်ခွင့် မရပါ — Link သက်တမ်းကုန်/မမှန်/ငြင်းပယ်ခံရခြင်း ဖြစ်နိုင်ပါသည်။ Owner ထံမှ Link အသစ် တောင်းပါ။');
   }
 
-  async function join(text) {
+  async function joinInner(text, fromLink) {
     let info;
     try { info = fromCode(text); } catch (e) { alert('❌ Link / Code မမှန်ပါ'); return; }
     if (Date.now() > info.e) { alert('⏰ ဒီ Link သက်တမ်း ကုန်သွားပါပြီ (၂၄ နာရီသာ ခံပါသည်)။ Owner ထံမှ Link အသစ် တောင်းပါ။'); return; }
     if (live.cfg && live.cfg.key === info.k) { alert('ဒီ Session ထဲမှာ ရှိပြီးသားပါ။'); return; }
     if (live.joining) { alert('ဝင်ခွင့် တောင်းထားပြီးသား ဖြစ်ပါသည်။ Owner ၏ လက်ခံမှုကို စောင့်နေပါသည်။'); openModal(); return; }
-    if (!confirm(`👥 Job [${info.j || ''}] ၏ Team Live Session သို့ ဝင်ခွင့် တောင်းမလား?\n\nOwner က လက်ခံမှသာ ဝင်နိုင်ပါမည်။ လက်ခံပြီးလျှင် ဒီစက်ထဲက လက်ရှိ Job ကို Saved Jobs ထဲ အရင်သိမ်းပြီး Team ၏ Data ဖြင့် အစားထိုးပါမည်။\n\n(Cancel နှိပ်ပါက ဒီ Link ကို ပိတ်လိုက်ပါမည်)`)) { closeLinkOnCancel(info); return; }
+    if (!confirm(`👥 Job [${info.j || ''}] ၏ Team Live Session သို့ ဝင်ခွင့် တောင်းမလား?\n\nOwner က လက်ခံမှသာ ဝင်နိုင်ပါမည်။ လက်ခံပြီးလျှင် ဒီစက်ထဲက လက်ရှိ Job ကို Saved Jobs ထဲ အရင်သိမ်းပြီး Team ၏ Data ဖြင့် အစားထိုးပါမည်။\n\n(Cancel နှိပ်ပါက ဒီစက်မှာ ဒီ Page ကို အသုံးပြုခွင့် ပိတ်ပါမည်၊ Owner လက်ခံမှ ပြန်ဖွင့်နိုင်ပါမည်)`)) { if (fromLink && !live.cfg) setBlocked(true); return; }
     let name = localStorage.getItem(NAME_KEY) || '';
     if (!name) { name = (prompt('သင့်နာမည် (Owner ကို ပြမည့်နာမည်):', '') || '').trim(); if (!name) return; localStorage.setItem(NAME_KEY, name); }
     try {
@@ -6182,16 +6221,17 @@ Important Rules for Extraction:
         if (!g || !g.ct || live.joining !== j || j.opening) return;
         j.opening = true;
         openGrant(g, j.priv).then(tok => { if (live.joining === j) { j.offs.forEach(f => f()); j.offs = []; finishJoin(info, name, db, tok); } })
-          .catch(() => { if (live.joining === j) { clearJoining(); renderModalIfOpen(); alert('❌ Owner ၏ ခွင့်ပြုချက်ကို ဖွင့်မရပါ။ Link ကို ပြန်ဖွင့်ပြီး ပြန်တောင်းပါ။'); } });
+          .catch(() => { if (live.joining === j) { clearJoining(); renderModalIfOpen(); alert('❌ Owner ၏ ခွင့်ပြုချက်ကို ဖွင့်မရပါ။ Link ကို ပြန်ဖွင့်ပြီး ပြန်တောင်းပါ။'); if (live.visiting) showLock('blocked', 'ခွင့်ပြုချက် ဖွင့်မရပါ — Link ပြန်ထည့်ပြီး ပြန်တောင်းပါ။'); } });
       };
       const onStatus = s => {
         if (live.joining !== j) return;
-        if (s.val() === 'rejected') { j.status = 'rejected'; j.offs.forEach(f => f()); j.offs = []; renderModalIfOpen(); alert('❌ Owner က ဝင်ခွင့် ငြင်းပယ်လိုက်ပါသည်။'); clearJoining(); renderModalIfOpen(); }
+        if (s.val() === 'rejected') { j.status = 'rejected'; j.offs.forEach(f => f()); j.offs = []; renderModalIfOpen(); alert('❌ Owner က ဝင်ခွင့် ငြင်းပယ်လိုက်ပါသည်။'); clearJoining(); renderModalIfOpen(); if (live.visiting) { setBlocked(true); showLock('blocked', 'Owner က ဝင်ခွင့် ငြင်းပယ်ထားပါသည်။'); } }
       };
       gRef.on('value', onGrant); sRef.on('value', onStatus);
       j.offs.push(() => gRef.off('value', onGrant), () => sRef.off('value', onStatus));
       j.timer = setTimeout(() => { if (live.joining === j) { cancelJoin(true); alert('⏰ Link သက်တမ်းကုန်သွားပါပြီ။ ဝင်ခွင့် တောင်းမှု ပယ်ဖျက်လိုက်ပါသည်။'); } }, Math.max(1000, info.e - Date.now()));
       openModal();
+      return true;
     } catch (e) {
       clearJoining();
       alert('❌ Join မရပါ: ' + (e && e.message ? e.message : e) + '\n\nFirebase Rules ကို နောက်ဆုံး Rules အတိုင်း ပြင်ထားရန် လိုပါသည်။');
@@ -6203,7 +6243,7 @@ Important Rules for Extraction:
     try {
       const snap = await db.ref('sgs_live/' + info.k + '/data/' + token + '/flat').once('value');
       const flat = snap.val();
-      if (!flat) { clearJoining(); alert('⚠️ ဒီ Session မတွေ့ပါ (ပြီးဆုံးသွားပြီ ဖြစ်နိုင်ပါသည်)။'); renderModalIfOpen(); return; }
+      if (!flat) { clearJoining(); alert('⚠️ ဒီ Session မတွေ့ပါ (ပြီးဆုံးသွားပြီ ဖြစ်နိုင်ပါသည်)။'); renderModalIfOpen(); if (live.visiting) showLock('blocked', 'Session မတွေ့ပါ — ပြီးဆုံးသွားပြီ ဖြစ်နိုင်ပါသည်။'); return; }
       try {
         window.saveToStorage();
         const cur = (document.getElementById('job-no-input')?.value || '').trim();
@@ -6218,11 +6258,13 @@ Important Rules for Extraction:
       const cfg = { url: info.u, key: info.k, jobNo: info.j || '', name, owner: false, token, linkExp: info.e };
       localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
       localStorage.setItem(BASE_PREFIX + info.k, JSON.stringify(flat));
+      setBlocked(false);
       clearJoining();
       location.reload();
     } catch (e) {
       suppressAutoSave = false; clearJoining(); renderModalIfOpen();
       alert('❌ Join မရပါ: ' + (e && e.message ? e.message : e));
+      if (live.visiting) showLock('blocked', 'ဝင်ရောက်မှု မအောင်မြင်ပါ — ပြန်ကြိုးစားပါ။');
     }
   }
 
@@ -6362,7 +6404,7 @@ Important Rules for Extraction:
     on('live-leave', () => { if (confirm('Live မှ ထွက်မလား? ဒီစက်ထဲက Data ကို ဆက်ထားပါမည်။')) leave(false); });
     on('live-end', endSession);
     on('live-renew', renewLink);
-    on('live-cancel-join', () => cancelJoin(true));
+    on('live-cancel-join', () => cancelJoin(true, true));
     body.querySelectorAll('[data-live-accept]').forEach(b => b.addEventListener('click', () => decide(b.getAttribute('data-live-accept'), true)));
     body.querySelectorAll('[data-live-reject]').forEach(b => b.addEventListener('click', () => decide(b.getAttribute('data-live-reject'), false)));
   }
@@ -6386,8 +6428,8 @@ Important Rules for Extraction:
 
   live.origSave = window.saveToStorage;
   wrap('saveToStorage', function (o, a) { const r = o.apply(this, a); if (live.cfg && !live.applying) soon(700); return r; });
-  wrap('scheduleCloudUpload', function (o, a) { if (live.cfg) return; return o.apply(this, a); });
-  wrap('attachCloudListener', function (o, a) { if (live.cfg) return; return o.apply(this, a); });
+  wrap('scheduleCloudUpload', function (o, a) { if (live.cfg || live.visiting) return; return o.apply(this, a); });
+  wrap('attachCloudListener', function (o, a) { if (live.cfg || live.visiting) return; return o.apply(this, a); });
   ['loadJobFromDB', 'createNewJob', 'clearAppData', 'importBackupFile'].forEach(n => wrap(n, guardLeave));
   ['updateSirPackage', 'addSirPackage', 'deleteSirPackage', 'toggleVgmEdit'].forEach(n => wrap(n, function (o, a) { const r = o.apply(this, a); if (live.cfg && !live.applying) soon(500); return r; }));
 
